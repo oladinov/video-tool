@@ -1,0 +1,11 @@
+# Node artifacts
+node_modules
+npm-debug.log*
+package-lock.json
+
+# Env files
+.env
+
+# OS
+Thumbs.db
+Desktop.ini

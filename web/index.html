@@ -1,0 +1,566 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Video Tool MVP</title>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --panel: #1e293b;
+      --text: #e2e8f0;
+      --muted: #94a3b8;
+      --border: #334155;
+      --accent: #22c55e;
+      --accent-2: #38bdf8;
+      --warn: #f97316;
+    }
+    [data-theme="light"] {
+      --bg: #f8fafc;
+      --panel: #ffffff;
+      --text: #0f172a;
+      --muted: #475569;
+      --border: #e2e8f0;
+      --accent: #16a34a;
+      --accent-2: #0284c7;
+      --warn: #ea580c;
+    }
+    body { font-family: "Segoe UI", "Inter", system-ui, sans-serif; background: var(--bg); color: var(--text); margin: 0; padding: 24px; transition: background 0.2s ease, color 0.2s ease; }
+    h1 { margin-top: 0; display: flex; align-items: center; gap: 12px; }
+    .panel { background: var(--panel); padding: 16px; border-radius: 12px; margin-bottom: 16px; box-shadow: 0 8px 20px rgba(0,0,0,0.12); border: 1px solid var(--border); }
+    .flex { display: flex; gap: 16px; }
+    .list { max-height: 480px; overflow: auto; border: 1px solid var(--border); border-radius: 10px; padding: 8px; flex: 1; background: var(--bg); }
+    button { background: var(--accent); border: none; padding: 8px 12px; border-radius: 8px; cursor: pointer; font-weight: 600; color: #0b1120; transition: transform 0.08s ease, box-shadow 0.12s ease; box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+    button.secondary { background: var(--accent-2); color: #0b1120; }
+    button.ghost { background: transparent; color: var(--muted); border: 1px solid var(--border); box-shadow: none; }
+    button:hover { transform: translateY(-1px); }
+    button:active { transform: translateY(0); }
+    input, select { padding: 10px; border-radius: 10px; border: 1px solid var(--border); background: var(--panel); color: var(--text); }
+    code { background: var(--bg); padding: 2px 6px; border-radius: 6px; border: 1px solid var(--border); }
+    .entry { padding: 6px 8px; border-radius: 8px; margin-bottom: 4px; border: 1px solid transparent; }
+    .entry:hover { background: rgba(56, 189, 248, 0.08); border-color: var(--border); cursor: pointer; }
+    .detail-container { position: relative; display: flex; flex-direction: column; gap: 8px; }
+    .detail-header { position: sticky; top: 0; background: var(--panel); padding-bottom: 8px; display: flex; flex-wrap: wrap; gap: 8px; border-bottom: 1px solid var(--border); z-index: 1; }
+    .status { font-weight: 600; margin-top: 4px; color: var(--accent); }
+    .status.error { color: var(--warn); }
+    .spinner {
+      display: inline-block;
+      width: 16px;
+      height: 16px;
+      border: 3px solid rgba(255,255,255,0.25);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      vertical-align: middle;
+      margin-right: 6px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .tags { display: flex; flex-wrap: wrap; gap: 6px; }
+    .tag { background: rgba(56,189,248,0.12); color: var(--accent-2); padding: 4px 8px; border-radius: 999px; font-size: 12px; border: 1px solid var(--border); }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 8px; }
+    .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.02em; }
+    .value { font-weight: 600; }
+    .pre-json { background: var(--bg); border: 1px solid var(--border); padding: 8px; border-radius: 8px; max-height: 220px; overflow: auto; }
+    .toolbar { display: flex; gap: 8px; align-items: center; justify-content: space-between; }
+    .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.35); display: none; align-items: center; justify-content: center; z-index: 5; }
+    .modal { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 16px; width: min(480px, 90vw); box-shadow: 0 12px 30px rgba(0,0,0,0.25); }
+    .modal h4 { margin-top: 0; }
+    .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }
+    .field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px; }
+  </style>
+</head>
+<body>
+  <h1>
+    Video Tool
+    <button id="themeToggle" class="ghost">Modo claro/oscuro</button>
+  </h1>
+  <div class="panel">
+    <div>Ruta actual: <code id="cwd"></code></div>
+    <div style="margin-top:8px;">
+      <input id="pathInput" style="width: 60%;" placeholder="Ruta absoluta dentro de ROOTS" />
+      <button id="browseBtn">Explorar</button>
+      <button id="upBtn" class="ghost">Subir nivel</button>
+    </div>
+  </div>
+
+  <div class="flex">
+    <div class="panel list" id="entries"></div>
+    <div class="panel" style="flex:1;">
+      <h3>Detalle</h3>
+      <div class="detail-container">
+        <div class="detail-header">
+          <div id="actions" style="display:flex; gap:8px; flex-wrap:wrap;"></div>
+          <div class="toolbar" style="gap:8px;">
+            <button id="toggleJson" class="ghost">Ver JSON</button>
+          </div>
+        </div>
+        <div id="summary"></div>
+        <div id="status" class="status"></div>
+        <pre id="log" style="white-space: pre-wrap; max-height:200px; overflow:auto; background: var(--bg); border:1px solid var(--border); border-radius:8px; padding:8px;"></pre>
+        <pre id="detail" class="pre-json" style="display:none;"></pre>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-backdrop" id="modalBackdrop">
+    <div class="modal" id="modal">
+      <h4 id="modalTitle"></h4>
+      <div id="modalBody"></div>
+      <div class="modal-actions">
+        <button id="modalCancel" class="ghost">Cancelar</button>
+        <button id="modalConfirm">Confirmar</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const entriesEl = document.getElementById('entries');
+    const detailEl = document.getElementById('detail');
+    const actionsEl = document.getElementById('actions');
+    const statusEl = document.getElementById('status');
+    const logEl = document.getElementById('log');
+    const cwdEl = document.getElementById('cwd');
+    const pathInput = document.getElementById('pathInput');
+    const summaryEl = document.getElementById('summary');
+    const toggleJsonBtn = document.getElementById('toggleJson');
+    const upBtn = document.getElementById('upBtn');
+    const modalBackdrop = document.getElementById('modalBackdrop');
+    const modalTitle = document.getElementById('modalTitle');
+    const modalBody = document.getElementById('modalBody');
+    const modalConfirm = document.getElementById('modalConfirm');
+    const modalCancel = document.getElementById('modalCancel');
+    let isWorking = false;
+    let lastProbe = null;
+    let currentListPath = null;
+    let showJson = false;
+    let roots = [];
+    let modalState = null;
+
+    const formatBytes = (num = 0) => {
+      if (!Number.isFinite(num)) return '';
+      const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+      let i = 0;
+      while (num >= 1024 && i < units.length - 1) {
+        num /= 1024;
+        i++;
+      }
+      const value = num >= 10 ? num.toFixed(1) : num.toFixed(2);
+      return `${value} ${units[i]}`;
+    };
+
+    const formatBitrate = (br) => {
+      if (!br || !Number.isFinite(br)) return '';
+      return `${(br / 1000 / 1000).toFixed(2)} Mbps`;
+    };
+
+    const formatFps = (stream) => {
+      const r = stream?.avg_frame_rate || stream?.r_frame_rate;
+      if (!r || r === '0/0') return '';
+      const [n, d] = r.split('/').map(Number);
+      if (!n || !d) return '';
+      return `${(n / d).toFixed(2)} fps`;
+    };
+
+    const formatResolution = (s) => {
+      if (s?.width && s?.height) return `${s.width}x${s.height}`;
+      return '';
+    };
+
+    const streamLanguage = (s) => s?.tags?.language || s?.tags?.LANGUAGE || '';
+
+    const streamSummary = (s) => {
+      const parts = [];
+      if (s?.codec_type) parts.push(s.codec_type);
+      if (s?.codec_name) parts.push(s.codec_name);
+      const res = formatResolution(s);
+      if (res) parts.push(res);
+      const fps = formatFps(s);
+      if (fps) parts.push(fps);
+      if (s?.bit_rate) parts.push(formatBitrate(Number(s.bit_rate)));
+      const lang = streamLanguage(s);
+      if (lang) parts.push(`lang:${lang}`);
+      return parts.join(' | ');
+    };
+
+    const resetDetail = () => {
+      lastProbe = null;
+      summaryEl.innerHTML = '<div class="label">Sin seleccion</div>';
+      detailEl.textContent = '';
+      actionsEl.innerHTML = '';
+      statusEl.textContent = '';
+      statusEl.classList.remove('error');
+      logEl.textContent = '';
+    };
+
+    const renderSummary = () => {
+      if (!lastProbe) {
+        summaryEl.innerHTML = '<div class="label">Sin seleccion</div>';
+        return;
+      }
+      const { path, size, meta } = lastProbe;
+      const streams = meta?.streams || [];
+      const video = streams.find((s) => s.codec_type === 'video');
+      const tags = meta?.format?.tags || {};
+      const tagEntries = Object.entries(tags);
+      const items = [];
+      items.push(`
+        <div class="grid">
+          <div><div class="label">Path</div><div class="value">${path || ''}</div></div>
+          <div><div class="label">Tamaño</div><div class="value">${formatBytes(size)}</div></div>
+          <div><div class="label">Codec</div><div class="value">${video?.codec_name || ''}</div></div>
+          <div><div class="label">Tipo</div><div class="value">${video?.codec_type || ''}</div></div>
+          <div><div class="label">Resolución</div><div class="value">${formatResolution(video)}</div></div>
+          <div><div class="label">Frame rate</div><div class="value">${formatFps(video)}</div></div>
+          <div><div class="label">Bitrate</div><div class="value">${meta?.format?.bit_rate ? formatBitrate(Number(meta.format.bit_rate)) : ''}</div></div>
+          <div><div class="label">Idioma (video)</div><div class="value">${streamLanguage(video)}</div></div>
+        </div>
+      `);
+      if (streams.length) {
+        items.push('<div class="label" style="margin-top:8px;">Streams</div>');
+        items.push(
+          `<div class="tags">${streams
+            .map((s) => `<span class="tag">${streamSummary(s)}</span>`)
+            .join('')}</div>`
+        );
+      }
+      if (tagEntries.length) {
+        items.push('<div class="label" style="margin-top:8px;">Tags</div>');
+        items.push(
+          `<div class="tags">${tagEntries
+            .map(([k, v]) => `<span class="tag">${k}: ${v}</span>`)
+            .join('')}</div>`
+        );
+      }
+      summaryEl.innerHTML = items.join('');
+    };
+
+    const closeModal = () => {
+      modalBackdrop.style.display = 'none';
+      modalState = null;
+    };
+
+    const openModal = ({ title, bodyHTML, onConfirm }) => {
+      modalTitle.textContent = title;
+      modalBody.innerHTML = bodyHTML;
+      modalBackdrop.style.display = 'flex';
+      modalState = { onConfirm };
+    };
+
+    modalCancel.onclick = closeModal;
+    modalBackdrop.onclick = (e) => {
+      if (e.target === modalBackdrop) closeModal();
+    };
+
+    const normalizeRoot = (p) => (p || '').replace(/[\\/]+$/, '');
+    const getParentPath = (p) => {
+      if (!p) return p;
+      const trimmed = p.replace(/[\\/]+$/, '');
+      const lastSlash = Math.max(trimmed.lastIndexOf('/'), trimmed.lastIndexOf('\\'));
+      if (lastSlash <= 0) return trimmed;
+      const candidate = trimmed.slice(0, lastSlash);
+      const matchedRoot = roots.find((r) =>
+        trimmed.toLowerCase().startsWith(normalizeRoot(r).toLowerCase())
+      );
+      if (!matchedRoot) return candidate;
+      const normalizedRoot = normalizeRoot(matchedRoot);
+      if (candidate.length < normalizedRoot.length) return normalizedRoot;
+      return candidate;
+    };
+
+    const loadRoots = async () => {
+      try {
+        const res = await fetch('/health');
+        const data = await res.json();
+        roots = data?.roots || [];
+      } catch (e) {
+        roots = [];
+      }
+    };
+
+    async function browse(pathValue) {
+      const url = new URL('/browse', window.location.origin);
+      if (pathValue) url.searchParams.set('path', pathValue);
+      const res = await fetch(url);
+      const data = await res.json();
+      cwdEl.textContent = data.path || '';
+      pathInput.value = data.path || '';
+      currentListPath = data.path;
+      entriesEl.innerHTML = '';
+      (data.entries || []).forEach((e) => {
+        const div = document.createElement('div');
+        div.innerHTML = `<strong>${e.kind || 'file'}</strong> | ${e.name} <span style="color:var(--muted);">(${formatBytes(e.size)})</span>`;
+        div.style.cursor = 'pointer';
+        div.onclick = () => {
+          if (e.isDirectory) {
+            browse(e.path);
+          } else {
+            probe(e.path);
+          }
+        };
+        entriesEl.appendChild(div);
+      });
+    }
+
+    async function probe(pathValue) {
+      const url = new URL('/probe', window.location.origin);
+      url.searchParams.set('path', pathValue);
+      const res = await fetch(url);
+      const data = await res.json();
+      lastProbe = data;
+      detailEl.textContent = JSON.stringify(data, null, 2);
+      renderSummary();
+      renderActions();
+    }
+
+    function deriveDefaultOutput() {
+      if (!lastProbe?.path) return '';
+      const p = lastProbe.path;
+      const vStream = lastProbe.meta?.streams?.find((s) => s.codec_type === 'video');
+      const h = vStream?.height;
+      const suffix = h ? `-${h}p-HEVC` : '-HEVC';
+      const dot = p.lastIndexOf('.');
+      const base = dot >= 0 ? p.slice(0, dot) : p;
+      const ext = dot >= 0 ? p.slice(dot) : '';
+      return `${base}${suffix}${ext}`;
+    }
+
+    async function transcodeHevc() {
+      if (!lastProbe?.path) return;
+      const suggested = deriveDefaultOutput();
+      const out = prompt('Nombre de archivo de salida (ruta completa)', suggested);
+      if (!out) return;
+      isWorking = true;
+      statusEl.innerHTML = '<span class="spinner"></span>Transcodificando a HEVC con NVENC...';
+      statusEl.classList.remove('error');
+      logEl.textContent = '';
+      try {
+        const res = await fetch('/transcode-hevc', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ input: lastProbe.path, output: out }),
+        });
+        const data = await res.json();
+        if (!res.ok || !data.ok) {
+          throw new Error(data.error || 'Error en transcode');
+        }
+        statusEl.textContent = `Listo: ${data.output}`;
+        if (data.log) {
+          logEl.textContent = data.log;
+        }
+        if (currentListPath) {
+          await browse(currentListPath);
+        }
+      } catch (err) {
+        statusEl.textContent = `Error: ${err.message}`;
+        statusEl.classList.add('error');
+      } finally {
+        isWorking = false;
+      }
+    }
+
+    function renderActions() {
+      actionsEl.innerHTML = '';
+      if (!lastProbe) return;
+      const hasVideo = lastProbe.meta?.streams?.some((s) => s.codec_type === 'video');
+      const actions = [];
+      const makeBtn = (label, handler, variant = '') => {
+        const b = document.createElement('button');
+        b.textContent = label;
+        if (variant) b.classList.add(variant);
+        b.onclick = handler;
+        b.disabled = isWorking;
+        return b;
+      };
+      if (hasVideo) {
+        actions.push(makeBtn('Transcodificar a HEVC (NVENC)', transcodeHevc));
+      }
+      actions.push(makeBtn('Copiar', () => openCopyMove('copy'), 'secondary'));
+      actions.push(makeBtn('Mover', () => openCopyMove('move'), 'secondary'));
+      actions.push(makeBtn('Renombrar', openRename, 'ghost'));
+      actions.push(makeBtn('Borrar', openDelete, 'ghost'));
+      actions.push(makeBtn('Crear carpeta', openCreateDir, 'secondary'));
+      actions.forEach((b) => actionsEl.appendChild(b));
+    }
+
+    modalConfirm.onclick = async () => {
+      if (!modalState?.onConfirm) return;
+      await modalState.onConfirm();
+    };
+
+    const openCreateDir = () => {
+      const base = currentListPath || lastProbe?.path || '';
+      const body = `
+        <div class="field">
+          <label class="label">Carpeta base</label>
+          <input id="dirBase" value="${base}">
+        </div>
+        <div class="field">
+          <label class="label">Nombre de la carpeta</label>
+          <input id="dirName" placeholder="Nueva carpeta">
+        </div>`;
+      openModal({
+        title: 'Crear carpeta',
+        bodyHTML: body,
+        onConfirm: async () => {
+          const baseInput = document.getElementById('dirBase').value.trim();
+          const name = document.getElementById('dirName').value.trim();
+          if (!baseInput || !name) return;
+          statusEl.textContent = 'Creando carpeta...';
+          statusEl.classList.remove('error');
+          try {
+            const target = `${baseInput.replace(/[\\\\/]+$/, '')}\\${name}`;
+            const res = await fetch('/file-op', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ action: 'createDir', target }),
+            });
+            const data = await res.json();
+            if (!res.ok || !data.ok) throw new Error(data.error || 'Error al crear carpeta');
+            statusEl.textContent = `Carpeta creada: ${data.created}`;
+            closeModal();
+            if (currentListPath) await browse(currentListPath);
+          } catch (err) {
+            statusEl.textContent = `Error: ${err.message}`;
+            statusEl.classList.add('error');
+          }
+        },
+      });
+    };
+
+    const openCopyMove = (action) => {
+      if (!lastProbe?.path) return;
+      const body = `
+        <div class="field">
+          <label class="label">Origen</label>
+          <input id="opSource" value="${lastProbe.path}">
+        </div>
+        <div class="field">
+          <label class="label">Destino</label>
+          <input id="opTarget" placeholder="Ruta completa de destino">
+        </div>`;
+      openModal({
+        title: action === 'copy' ? 'Copiar archivo' : 'Mover archivo',
+        bodyHTML: body,
+        onConfirm: async () => {
+          const source = document.getElementById('opSource').value.trim();
+          const target = document.getElementById('opTarget').value.trim();
+          if (!source || !target) return;
+          statusEl.textContent = action === 'copy' ? 'Copiando...' : 'Moviendo...';
+          statusEl.classList.remove('error');
+          try {
+            const res = await fetch('/file-op', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ action, source, target }),
+            });
+            const data = await res.json();
+            if (!res.ok || !data.ok) throw new Error(data.error || `Error al ${action}`);
+            statusEl.textContent = `Listo: ${action === 'copy' ? 'copiado' : 'movido'}`;
+            closeModal();
+            if (currentListPath) await browse(currentListPath);
+          } catch (err) {
+            statusEl.textContent = `Error: ${err.message}`;
+            statusEl.classList.add('error');
+          }
+        },
+      });
+    };
+
+    const openDelete = () => {
+      if (!lastProbe?.path) return;
+      const body = `<div>¿Seguro que deseas borrar?</div><div><code>${lastProbe.path}</code></div>`;
+      openModal({
+        title: 'Borrar archivo',
+        bodyHTML: body,
+        onConfirm: async () => {
+          statusEl.textContent = 'Borrando...';
+          statusEl.classList.remove('error');
+          try {
+            const res = await fetch('/file-op', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ action: 'delete', source: lastProbe.path }),
+            });
+            const data = await res.json();
+            if (!res.ok || !data.ok) throw new Error(data.error || 'Error al borrar');
+            statusEl.textContent = 'Archivo borrado';
+            closeModal();
+            resetDetail();
+            if (currentListPath) await browse(currentListPath);
+          } catch (err) {
+            statusEl.textContent = `Error: ${err.message}`;
+            statusEl.classList.add('error');
+          }
+        },
+      });
+    };
+
+    const openRename = () => {
+      if (!lastProbe?.path) return;
+      const body = `
+        <div class="field">
+          <label class="label">Actual</label>
+          <input id="renameSource" value="${lastProbe.path}">
+        </div>
+        <div class="field">
+          <label class="label">Nuevo nombre (misma carpeta o ruta completa)</label>
+          <input id="renameTarget" placeholder="Nuevo nombre">
+        </div>
+        <div class="label" style="color:var(--warn);">Si cambias la extensión, asegúrate de que sea intencional.</div>
+      `;
+      openModal({
+        title: 'Renombrar archivo',
+        bodyHTML: body,
+        onConfirm: async () => {
+          const source = document.getElementById('renameSource').value.trim();
+          let target = document.getElementById('renameTarget').value.trim();
+          if (!source || !target) return;
+          if (!target.includes('\\') && !target.includes('/')) {
+            const baseDir = source.replace(/[^\\/]+$/, '');
+            target = baseDir + target;
+          }
+          statusEl.textContent = 'Renombrando...';
+          statusEl.classList.remove('error');
+          try {
+            const res = await fetch('/file-op', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ action: 'rename', source, target }),
+            });
+            const data = await res.json();
+            if (!res.ok || !data.ok) throw new Error(data.error || 'Error al renombrar');
+            statusEl.textContent = 'Renombrado listo';
+            closeModal();
+            if (currentListPath) await browse(currentListPath);
+          } catch (err) {
+            statusEl.textContent = `Error: ${err.message}`;
+            statusEl.classList.add('error');
+          }
+        },
+      });
+    };
+
+    toggleJsonBtn.onclick = () => {
+      showJson = !showJson;
+      detailEl.style.display = showJson ? 'block' : 'none';
+      toggleJsonBtn.textContent = showJson ? 'Ocultar JSON' : 'Ver JSON';
+    };
+
+    document.getElementById('themeToggle').onclick = () => {
+      const next = document.body.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
+      document.body.setAttribute('data-theme', next);
+    };
+
+    document.getElementById('browseBtn').onclick = () => browse(pathInput.value);
+    upBtn.onclick = () => {
+      const parent = getParentPath(currentListPath);
+      if (parent) browse(parent);
+    };
+
+    (async () => {
+      await loadRoots();
+      browse();
+    })();
+  </script>
+</body>
+</html>
