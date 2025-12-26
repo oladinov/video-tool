@@ -135,6 +135,25 @@
     let showJson = false;
     let roots = [];
     let modalState = null;
+    const SUB_EXTS = new Set(['.srt', '.ass', '.ssa', '.vtt', '.sup', '.sub']);
+
+    const getExt = (p = '') => {
+      const idx = p.lastIndexOf('.');
+      return idx >= 0 ? p.slice(idx).toLowerCase() : '';
+    };
+
+    const dirname = (p = '') => {
+      const cleaned = (p || '').replace(/[^\\/]+$/, '');
+      if (!cleaned) return cleaned;
+      const rootMatch = cleaned.match(/^([A-Za-z]:)[\\/]?$/);
+      if (rootMatch) return `${rootMatch[1]}\\`;
+      return cleaned.replace(/[\\/]+$/, '');
+    };
+
+    const stripExt = (p = '') => {
+      const ext = getExt(p);
+      return ext ? p.slice(0, p.length - ext.length) : p;
+    };
 
     const formatBytes = (num = 0) => {
       if (!Number.isFinite(num)) return '';
@@ -167,6 +186,19 @@
     };
 
     const streamLanguage = (s) => s?.tags?.language || s?.tags?.LANGUAGE || '';
+    const normalizedLanguage = (s) => {
+      const raw = streamLanguage(s)?.toLowerCase() || '';
+      const match = raw.match(/[a-z]{2,3}(?:-[a-z0-9]+)?/);
+      return match ? match[0] : 'und';
+    };
+    const subtitleStreams = (meta) => (meta?.streams || []).filter((s) => s.codec_type === 'subtitle');
+    const isSubtitleFile = (pathValue) => SUB_EXTS.has(getExt(pathValue));
+    const deriveBurnInName = (videoPath) => {
+      if (!videoPath) return '';
+      const ext = getExt(videoPath) || '.mp4';
+      const base = stripExt(videoPath);
+      return `${base}.burnin${ext || '.mp4'}`;
+    };
 
     const streamSummary = (s) => {
       const parts = [];
@@ -242,6 +274,7 @@
     const openModal = ({ title, bodyHTML, onConfirm }) => {
       modalTitle.textContent = title;
       modalBody.innerHTML = bodyHTML;
+      modalConfirm.disabled = false;
       modalBackdrop.style.display = 'flex';
       modalState = { onConfirm };
     };
@@ -324,6 +357,17 @@
       return `${base}${suffix}${ext}`;
     }
 
+    function deriveMp4Output() {
+      if (!lastProbe?.path) return '';
+      const p = lastProbe.path;
+      const vStream = lastProbe.meta?.streams?.find((s) => s.codec_type === 'video');
+      const h = vStream?.height;
+      const suffix = h ? `-${h}p-MP4` : '-MP4';
+      const dot = p.lastIndexOf('.');
+      const base = dot >= 0 ? p.slice(0, dot) : p;
+      return `${base}${suffix}.mp4`;
+    }
+
     async function transcodeHevc() {
       if (!lastProbe?.path) return;
       const suggested = deriveDefaultOutput();
@@ -358,10 +402,159 @@
       }
     }
 
+    async function transcodeMp4() {
+      if (!lastProbe?.path) return;
+      const suggested = deriveMp4Output();
+      const out = prompt('Archivo de salida MP4 (ruta completa)', suggested);
+      if (!out) return;
+      isWorking = true;
+      statusEl.innerHTML = '<span class="spinner"></span>Transcodificando a MP4 compatible...';
+      statusEl.classList.remove('error');
+      logEl.textContent = '';
+      try {
+        const res = await fetch('/transcode-mp4', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ input: lastProbe.path, output: out }),
+        });
+        const data = await res.json();
+        if (!res.ok || !data.ok) {
+          throw new Error(data.error || 'Error en transcode MP4');
+        }
+        statusEl.textContent = `Listo: ${data.output}`;
+        if (data.log) {
+          logEl.textContent = data.log;
+        }
+        if (currentListPath) {
+          await browse(currentListPath);
+        }
+      } catch (err) {
+        statusEl.textContent = `Error: ${err.message}`;
+        statusEl.classList.add('error');
+      } finally {
+        isWorking = false;
+      }
+    }
+
+    async function extractSubs() {
+      if (!lastProbe?.path) return;
+      const subs = subtitleStreams(lastProbe.meta);
+      if (!subs.length) {
+        statusEl.textContent = 'No hay subtitulos embebidos en este video';
+        statusEl.classList.add('error');
+        return;
+      }
+      const chosen = subs[0];
+      const lang = normalizedLanguage(chosen);
+      isWorking = true;
+      statusEl.innerHTML = `<span class="spinner"></span>Extrayendo subtitulos${lang ? ` (${lang})` : ''}...`;
+      statusEl.classList.remove('error');
+      logEl.textContent = '';
+      try {
+        const res = await fetch('/extract-subs', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ input: lastProbe.path, streamIndex: subs.indexOf(chosen) }),
+        });
+        const data = await res.json();
+        if (!res.ok || !data.ok) {
+          throw new Error(data.error || 'Error al extraer subtitulos');
+        }
+        statusEl.textContent = `Subtitulo extraido: ${data.output}`;
+        if (currentListPath) {
+          await browse(currentListPath);
+        }
+      } catch (err) {
+        statusEl.textContent = `Error: ${err.message}`;
+        statusEl.classList.add('error');
+      } finally {
+        isWorking = false;
+      }
+    }
+
+    async function openBurnInModal() {
+      if (!lastProbe?.path) return;
+      const folder = dirname(lastProbe.path);
+      try {
+        const url = new URL('/browse', window.location.origin);
+        if (folder) url.searchParams.set('path', folder);
+        const res = await fetch(url);
+        const data = await res.json();
+        const videos = (data.entries || []).filter((e) => e.kind === 'video');
+        const defaultVideo = videos[0];
+        const defaultOut = deriveBurnInName(defaultVideo?.path || '');
+        const videoOptions = videos.length
+          ? videos
+              .map(
+                (v, idx) => `
+                <label style="display:flex; gap:8px; align-items:center; margin-bottom:4px;">
+                  <input type="radio" name="burnVideo" value="${v.path}" ${idx === 0 ? 'checked' : ''}>
+                  <div>
+                    <div class="value">${v.name}</div>
+                    <div class="label">${formatBytes(v.size)}</div>
+                  </div>
+                </label>`
+              )
+              .join('')
+          : '<div class="label">No hay videos en esta carpeta</div>';
+        openModal({
+          title: 'Quemar subtitulos',
+          bodyHTML: `
+            <div class="field">
+              <label class="label">Video destino</label>
+              <div id="burnVideoList">${videoOptions}</div>
+            </div>
+            <div class="field">
+              <label class="label">Archivo de salida</label>
+              <input id="burnOutput" value="${defaultOut}" placeholder="${defaultOut || 'video.burnin.mp4'}">
+            </div>`,
+          onConfirm: async () => {
+            const selected = document.querySelector('input[name="burnVideo"]:checked')?.value;
+            const outInput = document.getElementById('burnOutput');
+            const output = outInput?.value.trim() || deriveBurnInName(selected);
+            if (!selected) return false;
+            statusEl.innerHTML = '<span class="spinner"></span>Aplicando burn-in...';
+            statusEl.classList.remove('error');
+            logEl.textContent = '';
+            isWorking = true;
+            try {
+              const res = await fetch('/burn-subs', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ input: selected, subtitles: lastProbe.path, output }),
+              });
+              const data = await res.json();
+              if (!res.ok || !data.ok) {
+                throw new Error(data.error || 'Error en burn-in');
+              }
+              statusEl.textContent = `Listo: ${data.output}`;
+              logEl.textContent = data.log || '';
+              if (currentListPath) {
+                await browse(currentListPath);
+              }
+              return true;
+            } catch (err) {
+              statusEl.textContent = `Error: ${err.message}`;
+              statusEl.classList.add('error');
+              return false;
+            } finally {
+              isWorking = false;
+            }
+          },
+        });
+        modalConfirm.disabled = videos.length === 0;
+      } catch (err) {
+        statusEl.textContent = `Error al cargar videos: ${err.message}`;
+        statusEl.classList.add('error');
+      }
+    }
+
     function renderActions() {
       actionsEl.innerHTML = '';
       if (!lastProbe) return;
       const hasVideo = lastProbe.meta?.streams?.some((s) => s.codec_type === 'video');
+      const subs = subtitleStreams(lastProbe.meta);
+      const isExternalSub = isSubtitleFile(lastProbe.path);
       const actions = [];
       const makeBtn = (label, handler, variant = '') => {
         const b = document.createElement('button');
@@ -372,7 +565,14 @@
         return b;
       };
       if (hasVideo) {
+        if (subs.length) {
+          actions.push(makeBtn('Extraer subtitulos', extractSubs, 'secondary'));
+        }
+        actions.push(makeBtn('Transcodificar a MP4 (H.264)', transcodeMp4));
         actions.push(makeBtn('Transcodificar a HEVC (NVENC)', transcodeHevc));
+      }
+      if (isExternalSub) {
+        actions.push(makeBtn('Burn-in en video', openBurnInModal));
       }
       actions.push(makeBtn('Copiar', () => openCopyMove('copy'), 'secondary'));
       actions.push(makeBtn('Mover', () => openCopyMove('move'), 'secondary'));
@@ -382,9 +582,15 @@
       actions.forEach((b) => actionsEl.appendChild(b));
     }
 
-    modalConfirm.onclick = async () => {
+    modalConfirm.onclick = () => {
       if (!modalState?.onConfirm) return;
-      await modalState.onConfirm();
+      const action = modalState.onConfirm;
+      modalConfirm.disabled = true;
+      const maybePromise = action();
+      closeModal(); // cerrar de inmediato al confirmar
+      Promise.resolve(maybePromise).finally(() => {
+        modalConfirm.disabled = false;
+      });
     };
 
     const openCreateDir = () => {

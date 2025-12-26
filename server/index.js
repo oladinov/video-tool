@@ -94,6 +94,50 @@ function runFfprobe(filePath) {
   });
 }
 
+function getSubtitleStreams(meta) {
+  return (meta?.streams || []).filter((s) => s.codec_type === 'subtitle');
+}
+
+function languageCodeFromTags(tags = {}) {
+  const raw = String(tags.language || tags.LANGUAGE || '').trim().toLowerCase();
+  if (!raw) return 'und';
+  const match = raw.match(/[a-z]{2,3}(?:-[a-z0-9]+)?/i);
+  return match ? match[0].toLowerCase() : 'und';
+}
+
+function subtitleExtFromCodec(codecName = '') {
+  const c = codecName.toLowerCase();
+  switch (c) {
+    case 'subrip':
+      return '.srt';
+    case 'ass':
+      return '.ass';
+    case 'ssa':
+      return '.ssa';
+    case 'webvtt':
+      return '.vtt';
+    case 'mov_text':
+      return '.srt';
+    case 'dvd_subtitle':
+      return '.sub';
+    case 'hdmv_pgs_subtitle':
+      return '.sup';
+    default:
+      return '.srt';
+}
+}
+
+function escapeFilterPath(p) {
+  // ffmpeg filter syntax on Windows needs forward slashes and escaped drive colon.
+  return (p || '')
+    .replace(/\\/g, '/')
+    .replace(/:/g, '\\:')
+    .replace(/,/g, '\\,')
+    .replace(/\[/g, '\\[')
+    .replace(/\]/g, '\\]')
+    .replace(/'/g, "\\'");
+}
+
 function runFfmpeg(args) {
   return new Promise((resolve, reject) => {
     const proc = execFile('ffmpeg', args, { windowsHide: true }, (err, _stdout, stderr) => {
@@ -154,21 +198,42 @@ app.get('/probe', async (req, res) => {
 });
 
 app.post('/extract-subs', async (req, res) => {
-  const { input, streamIndex = 0, output } = req.body || {};
+  const { input, streamIndex = 0 } = req.body || {};
   try {
     const inputPath = resolvePath(input);
     const ext = path.extname(inputPath).toLowerCase();
     if (!VIDEO_EXT.has(ext)) {
       throw new Error('El archivo no es de video');
     }
-    const target =
-      output && output.trim()
-        ? resolvePath(output)
-        : path.join(path.dirname(inputPath), `${path.parse(inputPath).name}.subs.srt`);
 
-    const args = ['-y', '-i', inputPath, '-map', `0:s:${streamIndex}`, '-c', 'copy', target];
+    const meta = await runFfprobe(inputPath);
+    const subtitleStreams = getSubtitleStreams(meta);
+    if (!subtitleStreams.length) {
+      throw new Error('El video no tiene subtitulos embebidos');
+    }
+    const requested = Number.isInteger(streamIndex) ? streamIndex : Number(streamIndex);
+    const selected =
+      Number.isInteger(requested) && requested >= 0 && requested < subtitleStreams.length
+        ? subtitleStreams[requested]
+        : subtitleStreams[0];
+    const subtitleOrdinal = Math.max(0, subtitleStreams.indexOf(selected));
+    const langCode = languageCodeFromTags(selected?.tags);
+    const outExt = subtitleExtFromCodec(selected?.codec_name);
+    const target = resolvePath(
+      path.join(path.dirname(inputPath), `${path.parse(inputPath).name}.${langCode}${outExt}`)
+    );
+
+    const args = ['-y', '-i', inputPath, '-map', `0:s:${subtitleOrdinal}`, '-c', 'copy', target];
     await runFfmpeg(args);
-    res.json({ ok: true, output: target });
+    res.json({
+      ok: true,
+      output: target,
+      stream: {
+        codec: selected?.codec_name,
+        language: langCode,
+        ordinal: subtitleOrdinal,
+      },
+    });
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
@@ -179,17 +244,26 @@ app.post('/burn-subs', async (req, res) => {
   try {
     const inputPath = resolvePath(input);
     const subsPath = resolvePath(subtitles);
+    const parsed = path.parse(inputPath);
     const target =
       output && output.trim()
         ? resolvePath(output)
-        : path.join(path.dirname(inputPath), `${path.parse(inputPath).name}.burned.mp4`);
+        : path.join(parsed.dir, `${parsed.name}.burnin.mp4`);
 
     const isAss = path.extname(subsPath).toLowerCase() === '.ass';
-    const filter = isAss ? `ass=${subsPath}` : `subtitles=${subsPath}`;
+    const safePath = escapeFilterPath(subsPath);
+    const filter = isAss
+      ? `ass=filename='${safePath}'`
+      : `subtitles=filename='${safePath}'`;
     const args = ['-y', '-i', inputPath, '-vf', filter, '-c:a', 'copy', target];
-    await runFfmpeg(args);
-    res.json({ ok: true, output: target });
+    console.log('[burn-subs] start', { inputPath, subsPath, target, filter });
+    console.log('[burn-subs] ffmpeg', args.join(' '));
+    const { log } = await runFfmpegLogged(args);
+    const logSnippet = log && log.length > 8000 ? log.slice(-8000) : log;
+    console.log('[burn-subs] done', { output: target });
+    res.json({ ok: true, output: target, log: logSnippet, logTruncated: log && log.length > 8000 });
   } catch (err) {
+    console.error('[burn-subs] error', err);
     res.status(400).json({ error: err.message });
   }
 });
@@ -243,6 +317,73 @@ app.post('/transcode-hevc', async (req, res) => {
       'copy',
       '-movflags',
       '+faststart',
+      outPath,
+    ];
+
+    const { log } = await runFfmpegLogged(args);
+    const logSnippet = log && log.length > 8000 ? log.slice(-8000) : log;
+    res.json({ ok: true, output: outPath, log: logSnippet, logTruncated: log && log.length > 8000 });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.post('/transcode-mp4', async (req, res) => {
+  const {
+    input,
+    output,
+    crf = 19,
+    preset = 'medium',
+    audioBitrate = '192k',
+  } = req.body || {};
+  try {
+    const inputPath = resolvePath(input);
+    const ext = path.extname(inputPath).toLowerCase();
+    if (!VIDEO_EXT.has(ext)) {
+      throw new Error('El archivo no es de video');
+    }
+    const meta = await runFfprobe(inputPath);
+    const videoStream = meta?.streams?.find((s) => s.codec_type === 'video');
+    const height = videoStream?.height;
+    const suffix = height ? `-${height}p-MP4` : '-MP4';
+    const defaultOut = path.join(
+      path.dirname(inputPath),
+      `${path.parse(inputPath).name}${suffix}.mp4`
+    );
+    const outPath = output && output.trim() ? resolvePath(output) : defaultOut;
+
+    const args = [
+      '-y',
+      '-i',
+      inputPath,
+      '-map',
+      '0:v:0?',
+      '-map',
+      '0:a?',
+      '-map',
+      '0:s?',
+      '-c:v',
+      'libx264',
+      '-preset',
+      preset,
+      '-crf',
+      String(crf),
+      '-profile:v',
+      'high',
+      '-pix_fmt',
+      'yuv420p',
+      '-c:a',
+      'aac',
+      '-b:a',
+      audioBitrate,
+      '-c:s',
+      'mov_text',
+      '-movflags',
+      '+faststart',
+      '-map_metadata',
+      '0',
+      '-map_chapters',
+      '0',
       outPath,
     ];
 
